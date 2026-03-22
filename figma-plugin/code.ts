@@ -171,6 +171,7 @@ async function executeStep(step: any) {
       // Responsive Sizing
       if (props.layoutAlign) frame.layoutAlign = props.layoutAlign; // 'STRETCH' | 'INHERIT'
       if (props.layoutGrow !== undefined) frame.layoutGrow = props.layoutGrow; // 0 | 1
+      if (props.layoutPositioning) (frame as any).layoutPositioning = props.layoutPositioning; // 'ABSOLUTE' | 'AUTO'
 
       figma.viewport.scrollAndZoomIntoView([frame]);
       break;
@@ -189,6 +190,7 @@ async function executeStep(step: any) {
       // Responsive Sizing
       if (props.layoutAlign) rect.layoutAlign = props.layoutAlign;
       if (props.layoutGrow !== undefined) rect.layoutGrow = props.layoutGrow;
+      if (props.layoutPositioning) (rect as any).layoutPositioning = props.layoutPositioning;
 
       // Add to parent if specified (simplified)
       const parent = (figma.currentPage.selection[0] as FrameNode) || figma.currentPage;
@@ -254,7 +256,16 @@ async function executeStep(step: any) {
         (source as any).reactions = [
           {
             trigger: { type: props.triggerType || 'ON_CLICK' },
-            actions: [{ type: props.actionType || 'NAVIGATE', destinationId: destination.id }]
+            actions: [{ 
+              type: props.actionType || 'NAVIGATE', 
+              destinationId: destination.id,
+              navigationType: 'NAVIGATE',
+              transition: props.transitionType === 'SMART_ANIMATE' ? {
+                type: 'SMART_ANIMATE',
+                easing: { type: props.easing || 'EASE_IN_OUT' },
+                duration: props.duration || 300
+              } : null
+            }]
           }
         ];
       }
@@ -283,6 +294,43 @@ async function executeStep(step: any) {
       const newPage = figma.createPage();
       newPage.name = props.name || 'New Page';
       figma.currentPage = newPage;
+      break;
+
+    case 'setVariableMode':
+      const nodes = figma.currentPage.selection;
+      if (nodes.length > 0) {
+        for (const node of nodes) {
+          if ('setExplicitVariableModeForCollection' in node) {
+            (node as any).setExplicitVariableModeForCollection(props.collectionId, props.modeId);
+          }
+        }
+      }
+      break;
+
+    case 'addHeatmapOverlay':
+      const overlay = figma.createFrame();
+      overlay.name = 'UX_Heatmap_Overlay';
+      overlay.backgrounds = [];
+      overlay.fills = [];
+      overlay.x = props.x || 0;
+      overlay.y = props.y || 0;
+      overlay.resize(props.width || 1000, props.height || 1000);
+      overlay.locked = true;
+      overlay.opacity = 0.6;
+      
+      for (const point of props.points) {
+        const circle = figma.createEllipse();
+        circle.resize(point.radius * 2, point.radius * 2);
+        circle.x = point.x - point.radius;
+        circle.y = point.y - point.radius;
+        circle.fills = [{ type: 'SOLID', color: { r: 1, g: 0.2, b: 0.2 } }];
+        circle.effects = [{ 
+          type: 'LAYER_BLUR', 
+          radius: point.radius, 
+          visible: true 
+        } as BlurEffect];
+        overlay.appendChild(circle);
+      }
       break;
     
     // Add more actions as needed...

@@ -6,6 +6,9 @@ figma.ui.onmessage = async (msg: any) => {
   if (msg.type === 'GET_CANVAS_DATA') {
     const data = serializeCanvas();
     figma.ui.postMessage({ type: 'CANVAS_DATA_RESULT', data });
+  } else if (msg.type === 'GET_IMAGE_DATA') {
+    const data = await serializeSelectionAsImage();
+    figma.ui.postMessage({ type: 'CANVAS_IMAGE_RESULT', data });
   } else if (msg.type === 'RUN_STEP') {
     await executeStep(msg.step);
     figma.ui.postMessage({ type: 'STEP_DONE' });
@@ -31,6 +34,26 @@ function serializeCanvas() {
   };
 }
 
+async function serializeSelectionAsImage() {
+  const selection = figma.currentPage.selection;
+  if (selection.length === 0) return null;
+
+  try {
+    // Export the selection as a PNG
+    const bytes = await selection[0].exportAsync({
+      format: 'PNG',
+      constraint: { type: 'SCALE', value: 2 }
+    });
+    
+    // Convert to base64 for transmission
+    // Using a simple trick for base64 in plugin environment
+    return figma.base64Encode(bytes);
+  } catch (e) {
+    console.error('Export failed:', e);
+    return null;
+  }
+}
+
 async function executeStep(step: any) {
   const { action, props } = step;
 
@@ -44,6 +67,19 @@ async function executeStep(step: any) {
       if (props.fill) {
         frame.fills = [{ type: 'SOLID', color: hexToRgb(props.fill) }];
       }
+
+      // Auto-Layout Support
+      if (props.layoutMode) {
+        frame.layoutMode = props.layoutMode; // 'HORIZONTAL' | 'VERTICAL'
+        if (props.itemSpacing !== undefined) frame.itemSpacing = props.itemSpacing;
+        if (props.paddingLeft !== undefined) frame.paddingLeft = props.paddingLeft;
+        if (props.paddingRight !== undefined) frame.paddingRight = props.paddingRight;
+        if (props.paddingTop !== undefined) frame.paddingTop = props.paddingTop;
+        if (props.paddingBottom !== undefined) frame.paddingBottom = props.paddingBottom;
+        if (props.primaryAxisAlignItems) frame.primaryAxisAlignItems = props.primaryAxisAlignItems;
+        if (props.counterAxisAlignItems) frame.counterAxisAlignItems = props.counterAxisAlignItems;
+      }
+
       figma.viewport.scrollAndZoomIntoView([frame]);
       break;
 

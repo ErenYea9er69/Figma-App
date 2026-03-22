@@ -16,6 +16,8 @@ interface JobState {
   steps: any[];
   currentIndex: number;
   isRunning: boolean;
+  canvasImage?: string | null;
+  canvasData?: any;
 }
 
 let currentJob: JobState | null = null;
@@ -59,6 +61,9 @@ wss.on('connection', (ws) => {
       case 'CANVAS_DATA':
         handleCanvasData(message.data);
         break;
+      case 'CANVAS_IMAGE':
+        handleCanvasImage(message.image);
+        break;
     }
   });
 
@@ -72,39 +77,89 @@ wss.on('connection', (ws) => {
 async function handleRunPrompt(prompt: string) {
   console.log('Running prompt:', prompt);
   
-  // 1. Request canvas data first
+  // 1. Request canvas data AND image data
   if (pluginSocket) {
     pluginSocket.send(JSON.stringify({ type: 'READ_CANVAS' }));
+    pluginSocket.send(JSON.stringify({ type: 'READ_IMAGE' }));
   }
   
-  // We'll wait for CANVAS_DATA message to continue
   currentJob = {
     prompt,
     steps: [],
     currentIndex: 0,
-    isRunning: true
+    isRunning: true,
+    canvasImage: undefined // Explicitly undefined to indicate "waiting"
   };
   saveState();
 }
 
+async function handleCanvasImage(image: string | null) {
+  if (!currentJob) return;
+  console.log('Received canvas image data');
+  currentJob.canvasImage = image;
+  saveState();
+  checkReadyAndCallAI();
+}
+
 async function handleCanvasData(canvasData: any) {
   if (!currentJob) return;
+  console.log('Received canvas data');
+  currentJob.canvasData = canvasData;
+  saveState();
+  checkReadyAndCallAI();
+}
 
-  console.log('Received canvas data, calling LongCat API...');
+async function checkReadyAndCallAI() {
+  if (!currentJob || !currentJob.isRunning || !currentJob.canvasData) return;
+  
+  // If we're waiting for an image but don't have it yet (and it's not null)
+  // Note: we set it to null initially, then it becomes a string or remains null if no selection
+  // In handleRunPrompt we set canvasImage to undefined to indicate "waiting"
+  if (currentJob.canvasImage === undefined) return;
+
+  console.log('All data ready, calling LongCat API...');
   
   try {
+    const messages: any[] = [
+      {
+        role: 'system',
+        content: `You are a world-class Figma design architect. 
+        Your goal is to build professional, high-fidelity landing pages or UI components.
+        
+        CRITICAL RULES:
+        1. Respond ONLY with a JSON array of actions.
+        2. ALWAYS use Auto-Layout for frames (layoutMode: 'HORIZONTAL' | 'VERTICAL').
+        3. Use appropriate spacing (itemSpacing) and padding.
+        4. Colors should be modern (hex codes).
+        5. Structure your actions logically (Frames first, then children).
+        
+        SUPPORTED ACTIONS:
+        - createFrame: { name, width, height, fill, layoutMode, itemSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, primaryAxisAlignItems, counterAxisAlignItems }
+        - addRectangle: { name, width, height, fill, cornerRadius, x, y }
+        - addText: { content, fontSize, fill, x, y }
+        `
+      }
+    ];
+
+    const userMessage: any = {
+      role: 'user',
+      content: [
+        { type: 'text', text: `Context: ${JSON.stringify(currentJob.canvasData)}\n\nPrompt: ${currentJob.prompt}` }
+      ]
+    };
+
+    if (currentJob.canvasImage) {
+      userMessage.content.push({
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${currentJob.canvasImage}` }
+      });
+    }
+
+    messages.push(userMessage);
+
     const response = await axios.post(`${LONGCAT_BASE_URL}/chat/completions`, {
-      model: 'longcat-v1', // Placeholder, verify with user or docs
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a Figma design assistant. Respond ONLY with a JSON array of actions. Actions: createFrame, addRectangle, addText, etc. Use structure: { "action": "...", "props": { ... } }'
-        },
-        {
-          role: 'user',
-          content: `Context: ${JSON.stringify(canvasData)}\n\nPrompt: ${currentJob.prompt}`
-        }
-      ],
+      model: 'longcat-v1-vision', // Vision-capable model
+      messages: messages,
       response_format: { type: 'json_object' }
     }, {
       headers: { 'Authorization': `Bearer ${LONGCAT_API_KEY}` }

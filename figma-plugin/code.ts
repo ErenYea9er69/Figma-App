@@ -10,8 +10,9 @@ figma.ui.onmessage = async (msg: any) => {
     const data = await serializeSelectionAsImage();
     figma.ui.postMessage({ type: 'CANVAS_IMAGE_RESULT', data });
   } else if (msg.type === 'GET_COMPONENTS') {
-    const data = serializeComponents();
-    figma.ui.postMessage({ type: 'COMPONENTS_RESULT', data });
+    const local = serializeComponents();
+    const library = await serializeLibraryComponents();
+    figma.ui.postMessage({ type: 'COMPONENTS_RESULT', data: [...local, ...library] });
   } else if (msg.type === 'GET_TOKENS') {
     const data = serializeTokens();
     figma.ui.postMessage({ type: 'TOKENS_RESULT', data });
@@ -27,9 +28,27 @@ figma.ui.onmessage = async (msg: any) => {
 
 function serializeCanvas() {
   const selection = figma.currentPage.selection;
+  const viewport = figma.viewport.bounds;
   
-  // If selection exists, walk from there, otherwise from page
-  const rootNodes = selection.length > 0 ? selection : figma.currentPage.children;
+  // Logic: 
+  // 1. If nodes are selected, prioritize those.
+  // 2. Otherwise, only take top-level nodes that are within the current viewport.
+  
+  let rootNodes: readonly SceneNode[] = [];
+  
+  if (selection.length > 0) {
+    rootNodes = selection;
+  } else {
+    rootNodes = figma.currentPage.children.filter(node => {
+      // Check if node overlaps with viewport bounds
+      return (
+        node.x < viewport.x + viewport.width &&
+        node.x + node.width > viewport.x &&
+        node.y < viewport.y + viewport.height &&
+        node.y + node.height > viewport.y
+      );
+    });
+  }
   
   const MAX_DEPTH = 3;
   const walk = (node: SceneNode, depth: number): any => {
@@ -54,7 +73,8 @@ function serializeCanvas() {
 
   return {
     selection: selection.map(n => ({ type: n.type, name: n.name, id: n.id })),
-    tree: rootNodes.map(n => walk(n, 0))
+    tree: rootNodes.slice(0, 50).map(n => walk(n, 0)), // Cap at 50 root nodes for safety
+    viewport: { x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) }
   };
 }
 
@@ -84,8 +104,25 @@ function serializeComponents() {
     .map(n => ({
       id: n.id,
       name: n.name,
-      description: (n as ComponentNode).description
+      description: (n as ComponentNode).description,
+      isRemote: false
     }));
+}
+
+async function serializeLibraryComponents() {
+  try {
+    const libraries = await (figma.teamLibrary as any).getAvailableLibraryComponentsAsync();
+    // Only take the first 50 to avoid overloading the AI
+    return libraries.slice(0, 50).map((c: any) => ({
+      id: c.key, // Remote components use keys for instantiation
+      name: c.name,
+      description: c.description,
+      isRemote: true
+    }));
+  } catch (e) {
+    console.warn('Library access failed:', e);
+    return [];
+  }
 }
 
 function serializeTokens() {
@@ -130,6 +167,10 @@ async function executeStep(step: any) {
         if (props.primaryAxisAlignItems) frame.primaryAxisAlignItems = props.primaryAxisAlignItems;
         if (props.counterAxisAlignItems) frame.counterAxisAlignItems = props.counterAxisAlignItems;
       }
+      
+      // Responsive Sizing
+      if (props.layoutAlign) frame.layoutAlign = props.layoutAlign; // 'STRETCH' | 'INHERIT'
+      if (props.layoutGrow !== undefined) frame.layoutGrow = props.layoutGrow; // 0 | 1
 
       figma.viewport.scrollAndZoomIntoView([frame]);
       break;
@@ -145,6 +186,10 @@ async function executeStep(step: any) {
       }
       if (props.cornerRadius) rect.cornerRadius = props.cornerRadius;
       
+      // Responsive Sizing
+      if (props.layoutAlign) rect.layoutAlign = props.layoutAlign;
+      if (props.layoutGrow !== undefined) rect.layoutGrow = props.layoutGrow;
+
       // Add to parent if specified (simplified)
       const parent = (figma.currentPage.selection[0] as FrameNode) || figma.currentPage;
       if ('appendChild' in parent) {
@@ -165,12 +210,23 @@ async function executeStep(step: any) {
       break;
 
     case 'addInstance':
-      const component = figma.getNodeById(props.componentId) as ComponentNode;
+      let component: ComponentNode | null = null;
+      if (props.isRemote) {
+        component = (await figma.importComponentByKeyAsync(props.componentId)) as any;
+      } else {
+        component = figma.getNodeById(props.componentId) as ComponentNode;
+      }
+
       if (component) {
-        const instance = component.createInstance();
+        const instance = (component as any).createInstance();
         instance.x = props.x || 0;
         instance.y = props.y || 0;
         if (props.name) instance.name = props.name;
+        
+        // Apply Variants / Properties
+        if (props.properties && 'setProperties' in instance) {
+          (instance as any).setProperties(props.properties);
+        }
         
         // Apply variables if specified
         if (props.variables) {
@@ -203,6 +259,31 @@ async function executeStep(step: any) {
         ];
       }
       break;
+
+    case 'fetchDataAndPopulate':
+      try {
+        const response = await fetch(props.url);
+        const data = await response.json();
+        
+        // Find nodes by name and update content
+        for (const [nodeName, path] of Object.entries(props.mapping)) {
+           const val = getValueByPath(data, path as string);
+           const nodes = figma.currentPage.findAll(n => n.name === nodeName && n.type === 'TEXT');
+           for (const node of nodes) {
+              await figma.loadFontAsync((node as TextNode).fontName as FontName);
+              (node as TextNode).characters = String(val);
+           }
+        }
+      } catch (e) {
+        console.error('Fetch failed:', e);
+      }
+      break;
+
+    case 'createPage':
+      const newPage = figma.createPage();
+      newPage.name = props.name || 'New Page';
+      figma.currentPage = newPage;
+      break;
     
     // Add more actions as needed...
   }
@@ -216,4 +297,8 @@ function hexToRgb(hex: string) {
     g: parseInt(result[2], 16) / 255,
     b: parseInt(result[3], 16) / 255
   };
+}
+
+function getValueByPath(obj: any, path: string) {
+  return path.split('.').reduce((o, i) => (o ? o[i] : undefined), obj);
 }

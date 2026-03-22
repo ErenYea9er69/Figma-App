@@ -21,6 +21,8 @@ interface JobState {
   components?: any[];
   tokens?: any;
   history: any[];
+  isCritique?: boolean;
+  vibe?: string;
 }
 
 let currentJob: JobState | null = null;
@@ -54,7 +56,7 @@ wss.on('connection', (ws) => {
 
     switch (message.type) {
       case 'RUN_PROMPT':
-        handleRunPrompt(message.prompt);
+        handleRunPrompt(message.prompt, message.vibe);
         break;
       case 'STOP_JOB':
         handleStopJob();
@@ -87,8 +89,8 @@ wss.on('connection', (ws) => {
   });
 });
 
-async function handleRunPrompt(prompt: string) {
-  console.log('Running prompt:', prompt);
+async function handleRunPrompt(prompt: string, vibe: string = 'default') {
+  console.log('Running prompt:', prompt, 'with vibe:', vibe);
   
   // 1. Request canvas data, image data, AND components
   if (pluginSocket) {
@@ -106,7 +108,9 @@ async function handleRunPrompt(prompt: string) {
     canvasImage: undefined,
     components: undefined,
     tokens: undefined,
-    history: currentJob?.history || []
+    history: currentJob?.history || [],
+    isCritique: false,
+    vibe: vibe
   };
   
   // Add user prompt to history
@@ -155,11 +159,22 @@ async function checkReadyAndCallAI() {
   console.log('All data ready, calling LongCat API...');
   
   try {
+    const vibeRules: Record<string, string> = {
+      minimalist: "Use LOTS of white space, large margins, rounded corners (16px+), and subtle subtle grays.",
+      brutalist: "Use bold black borders (2px), sharp corners (0px), high contrast colors (Neon), and heavy shadows.",
+      glassmorphism: "Use transparent fills with background blur, white 1px borders, and vibrant gradient backgrounds.",
+      enterprise: "Use compact spacing, 4px corners, muted professional colors, and high information density.",
+      default: "Use modern clean design standards."
+    };
+
     const messages: any[] = [
       {
         role: 'system',
         content: `You are a world-class Figma design architect. 
         Your goal is to build professional, high-fidelity landing pages or UI components.
+        
+        VISUAL STYLE GUIDE: 
+        ${vibeRules[currentJob.vibe || 'default']}
         
         CRITICAL RULES:
         1. Respond ONLY with a JSON array of actions.
@@ -167,13 +182,18 @@ async function checkReadyAndCallAI() {
         3. Use appropriate spacing (itemSpacing) and padding.
         4. Colors should be modern (hex codes).
         5. Structure your actions logically (Frames first, then children).
+        6. For RESPONSIVE designs: 
+           - Use layoutAlign: 'STRETCH' to fill the parent width/height.
+           - Use layoutGrow: 1 to occupy remaining space in the layout axis.
         
         SUPPORTED ACTIONS:
-        - createFrame: { name, width, height, fill, layoutMode, itemSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, primaryAxisAlignItems, counterAxisAlignItems }
-        - addRectangle: { name, width, height, fill, cornerRadius, x, y }
+        - createFrame: { name, width, height, fill, layoutMode, itemSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, primaryAxisAlignItems, counterAxisAlignItems, layoutAlign, layoutGrow }
         - addText: { content, fontSize, fill, x, y }
-        - addInstance: { componentId, x, y, name, variables } // variables: { "property": "variableId" }
+        - addInstance: { componentId, x, y, name, variables, isRemote, properties } // properties: { "PropName": "Value" } for Variants
         - addPrototypeConnection: { sourceNodeId, destinationNodeId, triggerType, actionType }
+        - fetchDataAndPopulate: { url, mapping } // mapping: { "textNodeName": "jsonPath" }
+        - displayCode: { language, code } // For React/Tailwind handover
+        - createPage: { name }
         
         AVAILABLE COMPONENTS:
         ${JSON.stringify(currentJob.components)}
@@ -229,6 +249,9 @@ async function checkReadyAndCallAI() {
 
     response.data.on('end', () => {
       console.log('Stream finished');
+      if (!currentJob?.isCritique) {
+        handleCritiquePhase();
+      }
     });
 
   } catch (error) {
@@ -284,6 +307,25 @@ async function handleStepError(error: string, step: any) {
   
   // 3. Re-trigger AI for correction
   checkReadyAndCallAI();
+}
+
+async function handleCritiquePhase() {
+  if (!currentJob) return;
+  console.log('Starting Critique Phase...');
+  
+  currentJob.isCritique = true;
+  currentJob.history.push({
+    role: 'user',
+    content: "Design complete. Now, perform a professional critique and WCAG 2.1 Accessibility Audit of the design you just built. \n\nCHECKLIST:\n1. Contrast: Ensure text has a 4.5:1 ratio against background.\n2. Hierarchy: Are heading sizes logical (H1, H2, H3)?\n3. Naming: Are layers named semantically for developers?\n4. Spacing: 8pt grid consistency.\n\nIf you find ANY issues, provide actions to FIX them. If everything is perfect, say 'CRITIQUE_AND_ACCESSIBILITY_COMPLETE'."
+  });
+  
+  saveState();
+  
+  // We need to refresh canvas data for the critique
+  if (pluginSocket) {
+    pluginSocket.send(JSON.stringify({ type: 'READ_CANVAS' }));
+    pluginSocket.send(JSON.stringify({ type: 'READ_IMAGE' }));
+  }
 }
 
 function handleStopJob() {

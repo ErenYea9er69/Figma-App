@@ -57,6 +57,19 @@
     .connection-status { font-size: 11px; padding: 2px 6px; border-radius: 10px; }
     .connected { background: rgba(76, 175, 80, 0.2); color: #4caf50; }
     .disconnected { background: rgba(244, 67, 54, 0.2); color: #f44336; }
+    .code-container {
+      margin-top: 10px;
+      padding: 10px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+      display: none;
+      max-height: 200px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -65,16 +78,30 @@
     <span id="connection" class="connection-status disconnected">Disconnected</span>
   </div>
   
-  <textarea id="prompt" placeholder="Describe what you want to build..."></textarea>
-  
-  <div class="controls">
-    <button id="run">Run</button>
-    <button id="stop">Stop</button>
+  <div id="prompt-container">
+    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+      <select id="vibe-select" style="flex: 1; padding: 4px; font-size: 11px; background: #2c2c2c; color: #fff; border: 1px solid #444; border-radius: 4px;">
+        <option value="default">Default Style</option>
+        <option value="minimalist">Minimalist (Clean & Airy)</option>
+        <option value="brutalist">Brutalist (Bold & Raw)</option>
+        <option value="glassmorphism">Glassmorphism (Frosted & Modern)</option>
+        <option value="enterprise">Enterprise (Dense & Professional)</option>
+      </select>
+    </div>
+    <textarea id="prompt" placeholder="Describe your design..."></textarea>
+
+    <div class="controls">
+      <button id="run">Run</button>
+      <button id="stop">Stop</button>
+    </div>
   </div>
 
   <div id="status-container">
-    <div id="job-status" style="font-size: 12px; color: #888;">No active job</div>
-    <div id="steps-list"></div>
+    <div id="status" class="status-area">
+      <div class="status-header">Job Status</div>
+      <div id="steps-list"></div>
+      <div id="code-output" class="code-container"></div>
+    </div>
   </div>
 
   <script>
@@ -118,6 +145,13 @@
             parent.postMessage({ pluginMessage: { type: 'GET_TOKENS' } }, '*');
             break;
           case 'EXECUTE_STEP':
+            if (msg.step.action === 'displayCode') {
+              const codeOut = document.getElementById('code-output');
+              codeOut.style.display = 'block';
+              codeOut.textContent = msg.step.props.code;
+              socket.send(JSON.stringify({ type: 'STEP_COMPLETE' }));
+              break;
+            }
             updateUIForStep(msg.step);
             parent.postMessage({ pluginMessage: { type: 'RUN_STEP', step: msg.step } }, '*');
             break;
@@ -136,10 +170,11 @@
 
     runBtn.onclick = () => {
       const prompt = promptInput.value.trim();
+      const vibe = document.getElementById('vibe-select').value;
       if (!prompt || !socket) return;
       stepsList.innerHTML = '';
       jobStatus.textContent = 'Starting job...';
-      socket.send(JSON.stringify({ type: 'RUN_PROMPT', prompt }));
+      socket.send(JSON.stringify({ type: 'RUN_PROMPT', prompt, vibe }));
     };
 
     stopBtn.onclick = () => {

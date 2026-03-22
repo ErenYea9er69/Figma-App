@@ -9,6 +9,9 @@ figma.ui.onmessage = async (msg: any) => {
   } else if (msg.type === 'GET_IMAGE_DATA') {
     const data = await serializeSelectionAsImage();
     figma.ui.postMessage({ type: 'CANVAS_IMAGE_RESULT', data });
+  } else if (msg.type === 'GET_COMPONENTS') {
+    const data = serializeComponents();
+    figma.ui.postMessage({ type: 'COMPONENTS_RESULT', data });
   } else if (msg.type === 'RUN_STEP') {
     await executeStep(msg.step);
     figma.ui.postMessage({ type: 'STEP_DONE' });
@@ -52,6 +55,16 @@ async function serializeSelectionAsImage() {
     console.error('Export failed:', e);
     return null;
   }
+}
+
+function serializeComponents() {
+  // Find all local components
+  return figma.currentPage.findAll(n => n.type === 'COMPONENT')
+    .map(n => ({
+      id: n.id,
+      name: n.name,
+      description: (n as ComponentNode).description
+    }));
 }
 
 async function executeStep(step: any) {
@@ -110,6 +123,21 @@ async function executeStep(step: any) {
       text.fontSize = props.fontSize || 14;
       if (props.fill) {
         text.fills = [{ type: 'SOLID', color: hexToRgb(props.fill) }];
+      }
+      break;
+
+    case 'addInstance':
+      const component = figma.getNodeById(props.componentId) as ComponentNode;
+      if (component) {
+        const instance = component.createInstance();
+        instance.x = props.x || 0;
+        instance.y = props.y || 0;
+        if (props.name) instance.name = props.name;
+        
+        const instParent = (figma.currentPage.selection[0] as FrameNode) || figma.currentPage;
+        if ('appendChild' in instParent) {
+          (instParent as any).appendChild(instance);
+        }
       }
       break;
     

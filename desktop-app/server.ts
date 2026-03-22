@@ -18,10 +18,12 @@ interface JobState {
   isRunning: boolean;
   canvasImage?: string | null;
   canvasData?: any;
+  components?: any[];
 }
 
 let currentJob: JobState | null = null;
 let pluginSocket: WebSocket | null = null;
+let streamBuffer = '';
 
 // Load state from disk
 if (fs.existsSync(STATE_FILE)) {
@@ -64,6 +66,9 @@ wss.on('connection', (ws) => {
       case 'CANVAS_IMAGE':
         handleCanvasImage(message.image);
         break;
+      case 'COMPONENTS':
+        handleComponents(message.data);
+        break;
     }
   });
 
@@ -77,10 +82,11 @@ wss.on('connection', (ws) => {
 async function handleRunPrompt(prompt: string) {
   console.log('Running prompt:', prompt);
   
-  // 1. Request canvas data AND image data
+  // 1. Request canvas data, image data, AND components
   if (pluginSocket) {
     pluginSocket.send(JSON.stringify({ type: 'READ_CANVAS' }));
     pluginSocket.send(JSON.stringify({ type: 'READ_IMAGE' }));
+    pluginSocket.send(JSON.stringify({ type: 'READ_COMPONENTS' }));
   }
   
   currentJob = {
@@ -88,7 +94,8 @@ async function handleRunPrompt(prompt: string) {
     steps: [],
     currentIndex: 0,
     isRunning: true,
-    canvasImage: undefined // Explicitly undefined to indicate "waiting"
+    canvasImage: undefined,
+    components: undefined
   };
   saveState();
 }
@@ -97,6 +104,14 @@ async function handleCanvasImage(image: string | null) {
   if (!currentJob) return;
   console.log('Received canvas image data');
   currentJob.canvasImage = image;
+  saveState();
+  checkReadyAndCallAI();
+}
+
+async function handleComponents(components: any[]) {
+  if (!currentJob) return;
+  console.log('Received component library data');
+  currentJob.components = components;
   saveState();
   checkReadyAndCallAI();
 }
@@ -110,11 +125,8 @@ async function handleCanvasData(canvasData: any) {
 }
 
 async function checkReadyAndCallAI() {
-  if (!currentJob || !currentJob.isRunning || !currentJob.canvasData) return;
+  if (!currentJob || !currentJob.isRunning || !currentJob.canvasData || currentJob.components === undefined) return;
   
-  // If we're waiting for an image but don't have it yet (and it's not null)
-  // Note: we set it to null initially, then it becomes a string or remains null if no selection
-  // In handleRunPrompt we set canvasImage to undefined to indicate "waiting"
   if (currentJob.canvasImage === undefined) return;
 
   console.log('All data ready, calling LongCat API...');
@@ -137,6 +149,10 @@ async function checkReadyAndCallAI() {
         - createFrame: { name, width, height, fill, layoutMode, itemSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, primaryAxisAlignItems, counterAxisAlignItems }
         - addRectangle: { name, width, height, fill, cornerRadius, x, y }
         - addText: { content, fontSize, fill, x, y }
+        - addInstance: { componentId, x, y, name } // Use this for library components
+        
+        AVAILABLE COMPONENTS:
+        ${JSON.stringify(currentJob.components)}
         `
       }
     ];
@@ -157,20 +173,28 @@ async function checkReadyAndCallAI() {
 
     messages.push(userMessage);
 
-    const response = await axios.post(`${LONGCAT_BASE_URL}/chat/completions`, {
-      model: 'longcat-v1-vision', // Vision-capable model
-      messages: messages,
-      response_format: { type: 'json_object' }
-    }, {
-      headers: { 'Authorization': `Bearer ${LONGCAT_API_KEY}` }
+    const response = await axios({
+      method: 'post',
+      url: `${LONGCAT_BASE_URL}/chat/completions`,
+      data: {
+        model: 'longcat-v1-vision',
+        messages: messages,
+        stream: true
+      },
+      headers: { 'Authorization': `Bearer ${LONGCAT_API_KEY}` },
+      responseType: 'stream'
     });
 
-    const steps = response.data.choices[0].message.content;
-    currentJob.steps = JSON.parse(steps);
-    currentJob.currentIndex = 0;
-    saveState();
+    response.data.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      streamBuffer += text;
+      extractAndSendActions();
+    });
 
-    sendNextStep();
+    response.data.on('end', () => {
+      console.log('Stream finished');
+    });
+
   } catch (error) {
     console.error('LongCat API error:', error);
     if (pluginSocket) {
@@ -206,6 +230,36 @@ function handleStopJob() {
   if (currentJob) {
     currentJob.isRunning = false;
     saveState();
+  }
+}
+
+function extractAndSendActions() {
+  if (!currentJob) return;
+
+  let match;
+  // This regex tries to find valid JSON objects { ... } in the stream
+  // It looks for things like { "action": "..." }
+  const actionRegex = /({[^{}]*})/g; 
+
+  while ((match = actionRegex.exec(streamBuffer)) !== null) {
+      try {
+          const action = JSON.parse(match[1]);
+          if (action.action) {
+              // Add to current steps if not already added (simple check for now)
+              // In a real stream we'd need more sophisticated deduplication
+              currentJob.steps.push(action);
+              saveState();
+              
+              if (currentJob.isRunning) {
+                  sendNextStep();
+              }
+          }
+          // Remove parsed part from buffer
+          streamBuffer = streamBuffer.substring(match.index + match[1].length);
+          actionRegex.lastIndex = 0; 
+      } catch (e) {
+          // Incomplete JSON, wait for more
+      }
   }
 }
 

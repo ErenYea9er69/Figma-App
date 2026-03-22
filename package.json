@@ -1,0 +1,14 @@
+{
+  "name": "figma-ai-system",
+  "version": "1.0.0",
+  "description": "Figma AI system with desktop companion app",
+  "private": true,
+  "workspaces": [
+    "figma-plugin",
+    "desktop-app"
+  ],
+  "scripts": {
+    "dev:plugin": "npm run dev --workspace=figma-plugin",
+    "dev:app": "npm run dev --workspace=desktop-app"
+  }
+}

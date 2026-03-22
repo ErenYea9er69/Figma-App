@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES6",
+    "lib": ["es6", "dom"],
+    "module": "commonjs",
+    "typeRoots": ["./node_modules/@types", "./node_modules/@figma"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

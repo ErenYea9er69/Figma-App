@@ -239,7 +239,7 @@ async function checkReadyAndCallAI() {
       method: 'post',
       url: `${LONGCAT_BASE_URL}/chat/completions`,
       data: {
-        model: 'longcat-v1-vision',
+        model: 'LongCat-Flash-Omni-2603',
         messages: messages,
         stream: true
       },

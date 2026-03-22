@@ -7,10 +7,11 @@
   "editorType": [
     "figma"
   ],
-  "networkAccess": {
-    "allowedDomains": [
-      "http://localhost:3000",
-      "ws://localhost:3000"
-    ]
-  }
+    "networkAccess": {
+      "allowedDomains": [
+        "http://localhost:3000",
+        "ws://localhost:3000"
+      ],
+      "reasoning": "Accessing the local desktop server for AI design generation and vision processing."
+    }
 }

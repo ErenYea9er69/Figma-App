@@ -12,28 +12,49 @@ figma.ui.onmessage = async (msg: any) => {
   } else if (msg.type === 'GET_COMPONENTS') {
     const data = serializeComponents();
     figma.ui.postMessage({ type: 'COMPONENTS_RESULT', data });
+  } else if (msg.type === 'GET_TOKENS') {
+    const data = serializeTokens();
+    figma.ui.postMessage({ type: 'TOKENS_RESULT', data });
   } else if (msg.type === 'RUN_STEP') {
-    await executeStep(msg.step);
-    figma.ui.postMessage({ type: 'STEP_DONE' });
+    try {
+      await executeStep(msg.step);
+      figma.ui.postMessage({ type: 'STEP_DONE' });
+    } catch (error: any) {
+      figma.ui.postMessage({ type: 'STEP_ERROR', error: error.message, step: msg.step });
+    }
   }
 };
 
 function serializeCanvas() {
-  // Simple summary of top-level frames
-  const frames = figma.currentPage.children
-    .filter((node): node is FrameNode => node.type === 'FRAME')
-    .map(node => ({
-      name: node.name,
-      x: node.x,
-      y: node.y,
-      width: node.width,
-      height: node.height,
-      childrenCount: node.children.length
-    }));
+  const selection = figma.currentPage.selection;
   
+  // If selection exists, walk from there, otherwise from page
+  const rootNodes = selection.length > 0 ? selection : figma.currentPage.children;
+  
+  const MAX_DEPTH = 3;
+  const walk = (node: SceneNode, depth: number): any => {
+    if (depth > MAX_DEPTH) return { type: node.type, name: node.name, id: node.id, note: 'Max depth reached' };
+    
+    const data: any = {
+      id: node.id,
+      type: node.type,
+      name: node.name,
+      x: Math.round(node.x),
+      y: Math.round(node.y),
+      width: Math.round(node.width),
+      height: Math.round(node.height)
+    };
+
+    if ('children' in node) {
+      data.children = (node as any).children.map((c: SceneNode) => walk(c, depth + 1));
+    }
+
+    return data;
+  };
+
   return {
-    selection: figma.currentPage.selection.map((n: SceneNode) => ({ type: n.type, name: n.name })),
-    frames: frames
+    selection: selection.map(n => ({ type: n.type, name: n.name, id: n.id })),
+    tree: rootNodes.map(n => walk(n, 0))
   };
 }
 
@@ -67,6 +88,20 @@ function serializeComponents() {
     }));
 }
 
+function serializeTokens() {
+  const paintStyles = figma.getLocalPaintStyles().map(s => ({ id: s.id, name: s.name, type: s.type }));
+  const textStyles = figma.getLocalTextStyles().map(s => ({ id: s.id, name: s.name }));
+  
+  // Variables require a bit more care
+  const variables = figma.variables.getLocalVariables().map(v => ({
+    id: v.id,
+    name: v.name,
+    resolvedType: v.resolvedType
+  }));
+
+  return { paintStyles, textStyles, variables };
+}
+
 async function executeStep(step: any) {
   const { action, props } = step;
 
@@ -77,7 +112,10 @@ async function executeStep(step: any) {
       frame.resize(props.width || 400, props.height || 400);
       frame.x = props.x || 0;
       frame.y = props.y || 0;
-      if (props.fill) {
+      
+      if (props.fillStyleId) {
+        frame.fillStyleId = props.fillStyleId;
+      } else if (props.fill) {
         frame.fills = [{ type: 'SOLID', color: hexToRgb(props.fill) }];
       }
 
@@ -134,10 +172,35 @@ async function executeStep(step: any) {
         instance.y = props.y || 0;
         if (props.name) instance.name = props.name;
         
+        // Apply variables if specified
+        if (props.variables) {
+           for (const [prop, varId] of Object.entries(props.variables)) {
+             const variable = figma.variables.getVariableById(varId as string);
+             if (variable) {
+               // This is a simplified application
+               (instance as any).setBoundVariable(prop, variable.id);
+             }
+           }
+        }
+        
         const instParent = (figma.currentPage.selection[0] as FrameNode) || figma.currentPage;
         if ('appendChild' in instParent) {
           (instParent as any).appendChild(instance);
         }
+      }
+      break;
+
+    case 'addPrototypeConnection':
+      const source = figma.getNodeById(props.sourceNodeId) as SceneNode;
+      const destination = figma.getNodeById(props.destinationNodeId) as SceneNode;
+      
+      if (source && destination && 'reactions' in source) {
+        (source as any).reactions = [
+          {
+            trigger: { type: props.triggerType || 'ON_CLICK' },
+            actions: [{ type: props.actionType || 'NAVIGATE', destinationId: destination.id }]
+          }
+        ];
       }
       break;
     

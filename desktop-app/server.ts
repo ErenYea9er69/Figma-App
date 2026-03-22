@@ -19,6 +19,8 @@ interface JobState {
   canvasImage?: string | null;
   canvasData?: any;
   components?: any[];
+  tokens?: any;
+  history: any[];
 }
 
 let currentJob: JobState | null = null;
@@ -69,6 +71,12 @@ wss.on('connection', (ws) => {
       case 'COMPONENTS':
         handleComponents(message.data);
         break;
+      case 'TOKENS':
+        handleTokens(message.data);
+        break;
+      case 'STEP_ERROR':
+        handleStepError(message.error, message.step);
+        break;
     }
   });
 
@@ -87,16 +95,22 @@ async function handleRunPrompt(prompt: string) {
     pluginSocket.send(JSON.stringify({ type: 'READ_CANVAS' }));
     pluginSocket.send(JSON.stringify({ type: 'READ_IMAGE' }));
     pluginSocket.send(JSON.stringify({ type: 'READ_COMPONENTS' }));
+    pluginSocket.send(JSON.stringify({ type: 'READ_TOKENS' }));
   }
   
   currentJob = {
     prompt,
-    steps: [],
-    currentIndex: 0,
+    steps: currentJob?.isRunning ? currentJob.steps : [], // Keep steps if refining
+    currentIndex: currentJob?.isRunning ? currentJob.currentIndex : 0,
     isRunning: true,
     canvasImage: undefined,
-    components: undefined
+    components: undefined,
+    tokens: undefined,
+    history: currentJob?.history || []
   };
+  
+  // Add user prompt to history
+  currentJob.history.push({ role: 'user', content: prompt });
   saveState();
 }
 
@@ -116,6 +130,14 @@ async function handleComponents(components: any[]) {
   checkReadyAndCallAI();
 }
 
+async function handleTokens(tokens: any) {
+  if (!currentJob) return;
+  console.log('Received design tokens data');
+  currentJob.tokens = tokens;
+  saveState();
+  checkReadyAndCallAI();
+}
+
 async function handleCanvasData(canvasData: any) {
   if (!currentJob) return;
   console.log('Received canvas data');
@@ -125,7 +147,8 @@ async function handleCanvasData(canvasData: any) {
 }
 
 async function checkReadyAndCallAI() {
-  if (!currentJob || !currentJob.isRunning || !currentJob.canvasData || currentJob.components === undefined) return;
+  if (!currentJob || !currentJob.isRunning || !currentJob.canvasData || 
+      currentJob.components === undefined || currentJob.tokens === undefined) return;
   
   if (currentJob.canvasImage === undefined) return;
 
@@ -149,13 +172,26 @@ async function checkReadyAndCallAI() {
         - createFrame: { name, width, height, fill, layoutMode, itemSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, primaryAxisAlignItems, counterAxisAlignItems }
         - addRectangle: { name, width, height, fill, cornerRadius, x, y }
         - addText: { content, fontSize, fill, x, y }
-        - addInstance: { componentId, x, y, name } // Use this for library components
+        - addInstance: { componentId, x, y, name, variables } // variables: { "property": "variableId" }
+        - addPrototypeConnection: { sourceNodeId, destinationNodeId, triggerType, actionType }
         
         AVAILABLE COMPONENTS:
         ${JSON.stringify(currentJob.components)}
+        
+        AVAILABLE TOKENS (STYLES & VARIABLES):
+        ${JSON.stringify(currentJob.tokens)}
+        
+        PRIORITY: 
+        1. Use existing COMPONENTS if they match the UI need.
+        2. Use TOKENS (fillStyleId, textStyleId) instead of raw hex codes.
         `
       }
     ];
+
+    // Include history (limited to last 10 messages for context)
+    if (currentJob.history.length > 1) {
+      messages.push(...currentJob.history.slice(-10, -1));
+    }
 
     const userMessage: any = {
       role: 'user',
@@ -223,6 +259,31 @@ function handleStepComplete() {
   currentJob.currentIndex++;
   saveState();
   sendNextStep();
+}
+
+async function handleStepError(error: string, step: any) {
+  if (!currentJob) return;
+  console.error(`Step error reported: ${error}`, step);
+  
+  // 1. Add error to history
+  currentJob.history.push({ 
+    role: 'assistant', 
+    content: `I'll execute this action: ${JSON.stringify(step)}` 
+  });
+  currentJob.history.push({ 
+    role: 'user', // System-level feedback mask as user or system role if supported
+    content: `The previous step failed with error: "${error}". Please analyze why it failed and provide a corrected sequence of actions to achieve the goal.` 
+  });
+
+  // 2. Stop current execution and clear remaining steps
+  currentJob.steps = [];
+  currentJob.currentIndex = 0;
+  streamBuffer = ''; // Clear buffer for fresh AI response
+  
+  saveState();
+  
+  // 3. Re-trigger AI for correction
+  checkReadyAndCallAI();
 }
 
 function handleStopJob() {

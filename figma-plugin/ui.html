@@ -114,6 +114,9 @@
           case 'READ_COMPONENTS':
             parent.postMessage({ pluginMessage: { type: 'GET_COMPONENTS' } }, '*');
             break;
+          case 'READ_TOKENS':
+            parent.postMessage({ pluginMessage: { type: 'GET_TOKENS' } }, '*');
+            break;
           case 'EXECUTE_STEP':
             updateUIForStep(msg.step);
             parent.postMessage({ pluginMessage: { type: 'RUN_STEP', step: msg.step } }, '*');
@@ -173,12 +176,21 @@
         const last = stepsList.lastElementChild;
         if (last) last.className = 'status-item done';
         socket.send(JSON.stringify({ type: 'STEP_COMPLETE' }));
+      } else if (msg.type === 'STEP_ERROR') {
+        const last = stepsList.lastElementChild;
+        if (last) {
+          last.className = 'status-item active'; // Keep it red-ish or highlighted
+          last.textContent = `⚠ Error: ${msg.error}`;
+        }
+        socket.send(JSON.stringify({ type: 'STEP_ERROR', error: msg.error, step: msg.step }));
       } else if (msg.type === 'CANVAS_DATA_RESULT') {
         socket.send(JSON.stringify({ type: 'CANVAS_DATA', data: msg.data }));
       } else if (msg.type === 'CANVAS_IMAGE_RESULT') {
         socket.send(JSON.stringify({ type: 'CANVAS_IMAGE', image: msg.data }));
       } else if (msg.type === 'COMPONENTS_RESULT') {
         socket.send(JSON.stringify({ type: 'COMPONENTS', data: msg.data }));
+      } else if (msg.type === 'TOKENS_RESULT') {
+        socket.send(JSON.stringify({ type: 'TOKENS', data: msg.data }));
       }
     };
 

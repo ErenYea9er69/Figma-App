@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES6",
-    "lib": ["es6", "dom"],
+    "target": "ES2017",
+    "lib": ["es6", "dom", "es2017"],
     "module": "commonjs",
     "typeRoots": ["../node_modules/@types", "../node_modules/@figma"],
     "types": ["@figma/plugin-typings"],

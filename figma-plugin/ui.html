@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      padding: 16px;
+      margin: 0;
+      background-color: #1e1e1e;
+      color: #ffffff;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    h2 { font-size: 14px; margin-bottom: 12px; font-weight: 600; color: #b3b3b3; }
+    textarea {
+      width: 100%;
+      height: 80px;
+      background: #2c2c2c;
+      border: 1px solid #3e3e3e;
+      border-radius: 8px;
+      color: white;
+      padding: 8px;
+      resize: none;
+      font-size: 13px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    textarea:focus { outline: 2px solid #18a0fb; border-color: transparent; }
+    .controls { display: flex; gap: 8px; margin-bottom: 16px; }
+    button {
+      flex: 1;
+      padding: 10px;
+      border-radius: 6px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    #run { background: #18a0fb; color: white; }
+    #run:hover { background: #0d8de3; }
+    #stop { background: #3e3e3e; color: #ff5c5c; }
+    #stop:hover { background: #4e4e4e; }
+    #status-container {
+      background: #2c2c2c;
+      border-radius: 8px;
+      padding: 12px;
+      flex-grow: 1;
+      overflow-y: auto;
+      border: 1px solid #3e3e3e;
+    }
+    .status-item { font-size: 12px; margin-bottom: 4px; color: #a0a0a0; }
+    .status-item.active { color: #18a0fb; font-weight: 600; }
+    .status-item.done { color: #4caf50; }
+    .status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .connection-status { font-size: 11px; padding: 2px 6px; border-radius: 10px; }
+    .connected { background: rgba(76, 175, 80, 0.2); color: #4caf50; }
+    .disconnected { background: rgba(244, 67, 54, 0.2); color: #f44336; }
+  </style>
+</head>
+<body>
+  <div class="status-header">
+    <h2>Figma AI System</h2>
+    <span id="connection" class="connection-status disconnected">Disconnected</span>
+  </div>
+  
+  <textarea id="prompt" placeholder="Describe what you want to build..."></textarea>
+  
+  <div class="controls">
+    <button id="run">Run</button>
+    <button id="stop">Stop</button>
+  </div>
+
+  <div id="status-container">
+    <div id="job-status" style="font-size: 12px; color: #888;">No active job</div>
+    <div id="steps-list"></div>
+  </div>
+
+  <script>
+    let socket = null;
+    const promptInput = document.getElementById('prompt');
+    const runBtn = document.getElementById('run');
+    const stopBtn = document.getElementById('stop');
+    const connStatus = document.getElementById('connection');
+    const stepsList = document.getElementById('steps-list');
+    const jobStatus = document.getElementById('job-status');
+
+    function connect() {
+      socket = new WebSocket('ws://localhost:3000');
+      
+      socket.onopen = () => {
+        connStatus.textContent = 'Connected';
+        connStatus.className = 'connection-status connected';
+      };
+
+      socket.onclose = () => {
+        connStatus.textContent = 'Disconnected';
+        connStatus.className = 'connection-status disconnected';
+        setTimeout(connect, 3000); // Reconnect loop
+      };
+
+      socket.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        console.log('Plugin received:', msg.type);
+
+        switch (msg.type) {
+          case 'READ_CANVAS':
+            parent.postMessage({ pluginMessage: { type: 'GET_CANVAS_DATA' } }, '*');
+            break;
+          case 'EXECUTE_STEP':
+            updateUIForStep(msg.step);
+            parent.postMessage({ pluginMessage: { type: 'RUN_STEP', step: msg.step } }, '*');
+            break;
+          case 'RESUME_JOB':
+            handleResume(msg.state);
+            break;
+          case 'JOB_COMPLETE':
+            jobStatus.textContent = 'Job finished successfully!';
+            break;
+          case 'ERROR':
+            jobStatus.textContent = 'Error: ' + msg.message;
+            break;
+        }
+      };
+    }
+
+    runBtn.onclick = () => {
+      const prompt = promptInput.value.trim();
+      if (!prompt || !socket) return;
+      stepsList.innerHTML = '';
+      jobStatus.textContent = 'Starting job...';
+      socket.send(JSON.stringify({ type: 'RUN_PROMPT', prompt }));
+    };
+
+    stopBtn.onclick = () => {
+      if (socket) socket.send(JSON.stringify({ type: 'STOP_JOB' }));
+      jobStatus.textContent = 'Stopping...';
+    };
+
+    function updateUIForStep(step) {
+      jobStatus.textContent = 'Executing steps...';
+      const item = document.createElement('div');
+      item.className = 'status-item active';
+      item.textContent = `> ${step.action}: ${step.props?.name || ''}`;
+      stepsList.appendChild(item);
+      stepsList.scrollTop = stepsList.scrollHeight;
+    }
+
+    function handleResume(state) {
+      promptInput.value = state.prompt;
+      jobStatus.textContent = `Resuming job at step ${state.currentIndex + 1}...`;
+      // Clear and rebuild list
+      stepsList.innerHTML = '';
+      state.steps.slice(0, state.currentIndex).forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'status-item done';
+        item.textContent = `✓ ${s.action}`;
+        stepsList.appendChild(item);
+      });
+    }
+
+    // Listen for messages from code.ts
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (msg.type === 'STEP_DONE') {
+        const last = stepsList.lastElementChild;
+        if (last) last.className = 'status-item done';
+        socket.send(JSON.stringify({ type: 'STEP_COMPLETE' }));
+      } else if (msg.type === 'CANVAS_DATA_RESULT') {
+        socket.send(JSON.stringify({ type: 'CANVAS_DATA', data: msg.data }));
+      }
+    };
+
+    connect();
+  </script>
+</body>
+</html>

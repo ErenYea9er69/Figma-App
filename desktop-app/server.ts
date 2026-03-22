@@ -239,7 +239,7 @@ async function checkReadyAndCallAI() {
       method: 'post',
       url: `${LONGCAT_BASE_URL}/chat/completions`,
       data: {
-        model: 'LongCat-Flash-Omni-2603',
+        model: 'LongCat-Flash-Chat',
         messages: messages,
         stream: true
       },
@@ -260,11 +260,21 @@ async function checkReadyAndCallAI() {
       }
     });
 
-  } catch (error) {
-    console.error('LongCat API error:', error);
-    if (pluginSocket) {
-      pluginSocket.send(JSON.stringify({ type: 'ERROR', message: 'Failed to generate steps from LongCat API' }));
+  } catch (error: any) {
+    if (error.response) {
+      console.error(`LongCat API error (${error.response.status}):`, error.response.statusText);
+      console.error('Error Body:', error.response.data);
+      if (pluginSocket) {
+        pluginSocket.send(JSON.stringify({ 
+          type: 'ERROR', 
+          message: `API Error ${error.response.status}: ${error.response.statusText}` 
+        }));
+      }
+    } else {
+      console.error('LongCat API error:', error.message);
+      if (pluginSocket) pluginSocket.send(JSON.stringify({ type: 'ERROR', message: error.message }));
     }
+    currentJob.isRunning = false;
   }
 }
 
